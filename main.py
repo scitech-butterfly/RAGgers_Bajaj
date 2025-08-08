@@ -9,6 +9,10 @@ from pipeline import process_query, groq_client
 
 app = FastAPI()
 
+@app.get("/")
+def root():
+    return {"status": "API is running. Use /hackrx/run"}
+
 class QueryRequest(BaseModel):
     documents: str
     questions: List[str]
@@ -37,4 +41,5 @@ async def hackrx_run(payload: QueryRequest):
 
     except Exception as e:
         return {"error": str(e)}
+
 
