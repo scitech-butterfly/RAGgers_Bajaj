@@ -208,26 +208,5 @@ def ask_a_question(query, doc_path):
     result = process_query(query, doc_path, groq_client)
     print(json.dumps(result, indent=2))
 
-"""# Testing"""
-
-ask_a_question("46M, knee surgery, Pune, 3-month policy", "/content/BajajPolicies.pdf")
-
-queries = ["21M, knee surgery, Pune, 3-month policy", "Can I get coverage for mental illness treatment if admitted to a psychiatric hospital?"]
-for query in queries:
-  ask_a_question(query, "/content/BajajPolicies.pdf")
-
-queries = ["Is Ayurvedic treatment covered under hospitalization benefits?", "Do I need to pay anything if I use cashless facility in a network hospital for surgery?", "Am I eligible for health check-up after one year of policy renewal?", "Is ambulance cost covered for transferring a patient from one hospital to another?"]
-
-for query in queries:
-  ask_a_question(query, "/content/BajajPolicies.pdf")
-
-ask_a_question("Is cataract operation included for a 58-year-old under this health policy from Bajaj?", "/content/BajajPolicies.pdf")
-
-ask_a_question("It's been 2 months since I bought the policy. Can I claim for gallbladder removal surgery now?", "/content/BajajPolicies.pdf")
-
-ask_a_question("Will the insurance cover treatment for alcohol-related liver damage?", "/content/BajajPolicies.pdf")
-
-ask_a_question("Is a robotic knee replacement at Ruby Hall Clinic in Pune covered under this policy?", "/content/BajajPolicies.pdf")
-
 """## API ENDPOINT"""
 
