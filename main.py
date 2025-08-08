@@ -5,7 +5,7 @@ import tempfile
 import requests
 
 # Import your functions here
-from RAGgers.pipeline import process_query, groq_client
+from pipeline import process_query, groq_client
 
 app = FastAPI()
 
@@ -37,3 +37,4 @@ async def hackrx_run(payload: QueryRequest):
 
     except Exception as e:
         return {"error": str(e)}
+
