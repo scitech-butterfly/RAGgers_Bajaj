@@ -5,6 +5,7 @@ langchain
 sentence-transformers
 faiss-cpu
 pdfplumber
-docx
+python-docx
 groq
 requests
+
