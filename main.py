@@ -5,6 +5,7 @@ import tempfile
 import requests
 # Import your functions here
 from finalrag import process_query, groq_client
+import os
 
 app = FastAPI()
 
@@ -35,11 +36,9 @@ async def hackrx_run(payload: QueryRequest):
                 "question": q,
                 "answer": response
             })
-
+        
+        os.remove(tmp_path) # Clean up the temp file
         return {"answers": results}
 
     except Exception as e:
         return {"error": str(e)}
-
-
-
