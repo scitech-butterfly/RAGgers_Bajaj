@@ -38,8 +38,8 @@ from sentence_transformers import SentenceTransformer
 # This prevents them from being re-loaded on every request,
 # which was causing the 502 Bad Gateway timeout.
 print("Loading SentenceTransformer models...")
-EMBEDDING_MODEL = SentenceTransformer('all-MiniLM-L6-v2')
-RERANKER_MODEL = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
+EMBEDDING_MODEL = SentenceTransformer('paraphrase-albert-small-v2')
+RERANKER_MODEL = CrossEncoder('cross-encoder/ms-marco-TinyBERT-L2-v2')
 print("Models loaded.")
 
 # 1. Document Loading & Chunking (Enhanced)
