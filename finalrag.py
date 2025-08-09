@@ -9,12 +9,6 @@ Original file is located at
 # Installations
 """
 
-! pip install faiss-cpu pdfplumber python-docx groq
-
-!pip install langchain
-
-!pip install -U sentence-transformers
-
 """# Imports"""
 
 import os
@@ -314,8 +308,6 @@ def build_agent(groq_client: Groq):
         llm=lambda input: run_inference(prompt_template.format(query=input['query'], context="\n\n".join([f"[Clause - Pg {c['page']}] {c['content']}" for c in input['chunks']])), groq_client)
     )
     return AgentExecutor(agent=agent, verbose=True)
-
-# 9. End-to-End Runner
 
 # 9. End-to-End Runner (Enhanced)
 
