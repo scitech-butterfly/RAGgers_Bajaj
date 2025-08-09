@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from typing import List
 import tempfile
 import requests
+import io
 # Import your functions here
 from finalrag import process_query, groq_client
 
@@ -20,8 +21,6 @@ class QueryRequest(BaseModel):
 async def hackrx_run(payload: QueryRequest):
     url = payload.documents
     try:
-        import io
-        # Stream PDF into BytesIO (no full download in memory)
         response = requests.get(url, stream=True)
         if response.status_code != 200:
             return {"error": "Unable to download document"}
