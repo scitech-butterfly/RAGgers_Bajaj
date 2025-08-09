@@ -8,13 +8,6 @@ Original file is located at
 
 # Installations
 """
-
-! pip install faiss-cpu pdfplumber python-docx groq
-
-!pip install langchain
-
-!pip install -U sentence-transformers
-
 """# Imports"""
 
 import os
@@ -289,35 +282,3 @@ def process_query(query: str, doc_path: str, groq_client: Groq):
     return run_inference(prompt, groq_client)
 
 groq_client = Groq(api_key="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")
-
-def ask_a_question(query, doc_path):
-    result = process_query(query, doc_path, groq_client)
-    print(json.dumps(result, indent=2))
-
-"""# Testing"""
-
-queries = ["21M, knee surgery, Pune, 3-month policy", "Can I get coverage for mental illness treatment if admitted to a psychiatric hospital?"]
-for query in queries:
-  ask_a_question(query, "/content/BajajPolicies.pdf")
-
-queries = ["Is Ayurvedic treatment covered under hospitalization benefits?", "Do I need to pay anything if I use cashless facility in a network hospital for surgery?", "Am I eligible for health check-up after one year of policy renewal?", "Is ambulance cost covered for transferring a patient from one hospital to another?"]
-for query in queries:
-  ask_a_question(query, "/content/BajajPolicies.pdf")
-
-ask_a_question("46M, knee surgery, Pune, 3-month policy", "/content/BAJHLIP23020V012223.pdf")
-
-ask_a_question("I am 20 years old which policies i can get for knee surgery", "/content/BAJHLIP23020V012223.pdf")
-
-ask_a_question("21M, knee surgery, Pune, 3-month policy", "/content/BAJHLIP23020V012223.pdf")
-
-ask_a_question("My father, aged 58, is scheduled for a cataract surgery next week. Will our Bajaj policy cover the costs?", "/content/BAJHLIP23020V012223.pdf")
-
-ask_a_question("Is cataract operation included for a 58-year-old under this health policy from Bajaj?", "/content/BAJHLIP23020V012223.pdf")
-
-ask_a_question("It's been 2 months since I bought the policy. Can I claim for gallbladder removal surgery now?", "/content/BAJHLIP23020V012223.pdf")
-
-ask_a_question("Will the insurance cover treatment for alcohol-related liver damage?", "/content/BAJHLIP23020V012223.pdf")
-
-ask_a_question("Is a robotic knee replacement at Ruby Hall Clinic in Pune covered under this policy?", "/content/BAJHLIP23020V012223.pdf")
-
-ask_a_question("What is the grace period for premium payment under the National Parivar Mediclaim Plus Policy?", "/content/BAJHLIP23020V012223.pdf")
