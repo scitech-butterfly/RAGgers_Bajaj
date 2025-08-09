@@ -15,7 +15,7 @@ import faiss
 import json
 import numpy as np
 from typing import List, Dict
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer, CrossEncoder
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 import pdfplumber
 import docx
@@ -27,11 +27,20 @@ from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import Tool
 from langchain.agents import AgentExecutor, create_react_agent
 from langchain_core.prompts import PromptTemplate
+from functools import lru_cache
 
 """# Main Code"""
 
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from sentence_transformers import SentenceTransformer
+
+# Initialize the models once at the top level of the module
+# This prevents them from being re-loaded on every request,
+# which was causing the 502 Bad Gateway timeout.
+print("Loading SentenceTransformer models...")
+EMBEDDING_MODEL = SentenceTransformer('all-MiniLM-L6-v2')
+RERANKER_MODEL = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
+print("Models loaded.")
 
 # 1. Document Loading & Chunking (Enhanced)
 
@@ -95,26 +104,30 @@ def load_and_chunk_document(path: str, chunk_size=1000, chunk_overlap=200) -> Li
 
     return all_chunks
 
-from functools import lru_cache
-
-@lru_cache(maxsize=1)
+@lru_cache(maxsize=128)
 def get_index_and_chunks(doc_path):
+    """
+    Caches the loaded chunks and FAISS index for a specific document path.
+    This prevents re-loading and re-indexing the same document for every request.
+    """
     chunks = load_and_chunk_document(doc_path)
     index, embeddings, model = build_faiss_index(chunks)
     return chunks, index, model
 
 # 2. Embedding + FAISS Indexing
 
-def build_faiss_index(chunks: List[Dict], model_name='all-MiniLM-L6-v2'):
-    model = SentenceTransformer(model_name)
+def build_faiss_index(chunks: List[Dict]):
+    """
+    Builds a FAISS index from the provided chunks using the pre-loaded embedding model.
+    """
     texts = [c['content'] for c in chunks]
-    embeddings = model.encode(texts)
+    embeddings = EMBEDDING_MODEL.encode(texts)
 
     dim = embeddings.shape[1]
     index = faiss.IndexFlatL2(dim)
     index.add(np.array(embeddings).astype('float32'))
 
-    return index, embeddings, model
+    return index, embeddings, EMBEDDING_MODEL
 
 # 3. Hybrid Semantic Retrieval
 
@@ -158,20 +171,16 @@ def parse_query_with_llm(query: str, groq_client: Groq) -> Dict:
         return {} # Return an empty dict on failure
 
 #Reranking the chunks for better retrival
-from sentence_transformers.cross_encoder import CrossEncoder
 
 def rerank_chunks(query: str, chunks: List[Dict], top_n=3) -> List[Dict]:
     """
     Re-ranks a list of chunks based on their relevance to the query using a CrossEncoder model.
     """
-    # Initialize the CrossEncoder model. This model is more powerful but slower than bi-encoders.
-    cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
-
     # Create pairs of [query, chunk_content] for scoring.
     pairs = [[query, chunk['content']] for chunk in chunks]
 
-    # Predict the relevance scores.
-    scores = cross_encoder.predict(pairs)
+    # Predict the relevance scores using the pre-loaded model.
+    scores = RERANKER_MODEL.predict(pairs)
 
     # Combine chunks with their scores and sort them.
     scored_chunks = list(zip(scores, chunks))
@@ -264,14 +273,15 @@ def build_agent(groq_client: Groq):
     )
     return AgentExecutor(agent=agent, verbose=True)
 
-# 9. End-to-End Runner
-
 # 9. End-to-End Runner (Enhanced)
 
 def process_query(query: str, doc_path: str, groq_client: Groq):
     parsed_query_data = parse_query_with_llm(query, groq_client)
     print("✅ Parsed Query:", json.dumps(parsed_query_data, indent=2))
 
+    # The get_index_and_chunks function is now correctly cached based on the doc_path.
+    # This prevents the slow re-loading of the model and re-indexing of the document
+    # for repeat requests with the same document.
     chunks, index, model = get_index_and_chunks(doc_path)
 
     initial_chunks = search_top_chunks(query, chunks, model, index, k=10)
