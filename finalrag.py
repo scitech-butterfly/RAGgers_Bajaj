@@ -52,6 +52,38 @@ def extract_text_from_pdf(path: str) -> List[Dict]:
                 chunks.append({"text": text.strip(), "page": i + 1})
     return chunks
 
+
+# Streaming generator to build FAISS without storing all chunks in memory
+def build_faiss_index_streaming_generator(file_obj, model_name='all-MiniLM-L6-v2', chunk_size=1000, chunk_overlap=200):
+    """
+    Streams through PDF pages, yields each chunk as it's embedded into FAISS.
+    Keeps memory usage constant regardless of PDF size.
+    """
+    model = SentenceTransformer(model_name)
+    dim = model.get_sentence_embedding_dimension()
+    index = faiss.IndexFlatL2(dim)
+
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap
+    )
+
+    with pdfplumber.open(file_obj) as pdf:
+        for page_num, page in enumerate(pdf.pages, start=1):
+            text = page.extract_text()
+            if not text:
+                continue
+
+            for chunk_content in text_splitter.split_text(text.strip()):
+                embedding = model.encode([chunk_content])
+                index.add(np.array(embedding).astype('float32'))
+
+                # Yield one chunk at a time instead of storing all in memory
+                yield {
+                    "content": chunk_content,
+                    "page": page_num
+                }, index, model
+
 def extract_text_from_docx(path: str) -> List[Dict]:
     """Extracts text from a DOCX document."""
     doc = docx.Document(path)
@@ -106,8 +138,20 @@ from functools import lru_cache
 
 @lru_cache(maxsize=1)
 def get_index_and_chunks(doc_path):
-    chunks = load_and_chunk_document(doc_path)
-    index, embeddings, model = build_faiss_index(chunks)
+    if hasattr(doc_path, "read"):  # file-like object (BytesIO)
+        gen = build_faiss_index_streaming_generator(doc_path)
+    else:  # local file path
+        with open(doc_path, "rb") as f:
+            gen = build_faiss_index_streaming_generator(f)
+
+    chunks = []
+    index = None
+    model = None
+    for chunk, idx, mdl in gen:
+        chunks.append(chunk)
+        index = idx
+        model = mdl
+
     return chunks, index, model
 
 # 2. Embedding + FAISS Indexing

@@ -20,13 +20,16 @@ class QueryRequest(BaseModel):
 async def hackrx_run(payload: QueryRequest):
     url = payload.documents
     try:
-        # Download PDF to temp file
-        response = requests.get(url)
+        import io
+        # Stream PDF into BytesIO (no full download in memory)
+        response = requests.get(url, stream=True)
         if response.status_code != 200:
             return {"error": "Unable to download document"}
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-            tmp_file.write(response.content)
-            tmp_path = tmp_file.name
+        tmp_path = io.BytesIO()
+        for chunk in response.iter_content(chunk_size=8192):
+            if chunk:
+                tmp_path.write(chunk)
+        tmp_path.seek(0)
 
         results = []
         for q in payload.questions:
