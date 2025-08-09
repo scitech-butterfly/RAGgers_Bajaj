@@ -6,6 +6,8 @@ import requests
 import io
 # Import your functions here
 from finalrag import get_index_and_chunks, process_query_with_index, groq_client
+import tempfile
+import os
 
 app = FastAPI()
 
@@ -19,11 +21,6 @@ class QueryRequest(BaseModel):
 
 @app.post("/hackrx/run")
 async def hackrx_run(payload: QueryRequest):
-    """
-    Downloads the document via streaming into a BytesIO buffer (constant memory usage),
-    builds the FAISS index once in a streaming, page-by-page fashion,
-    and reuses it for all questions.
-    """
     url = payload.documents
     try:
         with requests.get(url, stream=True) as r:
@@ -35,16 +32,17 @@ async def hackrx_run(payload: QueryRequest):
                     tmp_buffer.write(chunk)
             tmp_buffer.seek(0)
 
-        # Build FAISS index once (streaming mode)
-        chunks, index, model = get_index_and_chunks(tmp_buffer)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Pass tmpdir as output_dir to store files isolated per request
+            chunks, index, model = get_index_and_chunks(tmp_buffer, output_dir=tmpdir)
 
-        results = []
-        for q in payload.questions:
-            answer = process_query_with_index(q, chunks, index, model, groq_client)
-            results.append({
-                "question": q,
-                "answer": answer
-            })
+            results = []
+            for q in payload.questions:
+                answer = process_query_with_index(q, chunks, index, model, groq_client)
+                results.append({
+                    "question": q,
+                    "answer": answer
+                })
 
         return {"answers": results}
 

@@ -23,32 +23,21 @@ from typing import Dict
 
 """# Main Code"""
 
-def get_index_and_chunks(doc_path):
-    """
-    Loads chunks and builds a FAISS index from either:
-    - a file-like object (e.g., BytesIO for streamed PDFs)
-    - a local file path
-    Uses a streaming generator to avoid loading the entire document into memory.
-    """
-    if hasattr(doc_path, "read"):  # file-like object
-        gen = build_faiss_index_streaming_generator(doc_path)
-    else:  # path string
+def get_index_and_chunks(doc_path, output_dir="."):
+    if hasattr(doc_path, "read"):
+        chunks_path, index_path, model = build_faiss_index_streaming_generator(doc_path, output_dir=output_dir)
+    else:
         with open(doc_path, "rb") as f:
-            gen = build_faiss_index_streaming_generator(f)
+            chunks_path, index_path, model = build_faiss_index_streaming_generator(f, output_dir=output_dir)
 
-    chunks = []
-    index = None
-    model = None
-    for chunk, idx, mdl in gen:
-        chunks.append(chunk)
-        index = idx
-        model = mdl
-
+    chunks, index, model = load_chunks_and_index(chunks_path, index_path)
     return chunks, index, model
 
 
 # Streaming generator to build FAISS without storing all chunks in memory
-def build_faiss_index_streaming_generator(file_obj, model_name='all-MiniLM-L6-v2', chunk_size=1000, chunk_overlap=200):
+import os
+
+def build_faiss_index_streaming_generator(file_obj, model_name='all-MiniLM-L6-v2', chunk_size=1000, chunk_overlap=200, output_dir="."):
     """
     Streams through PDF pages, yields each chunk as it's embedded into FAISS.
     Keeps memory usage constant regardless of PDF size.
@@ -62,21 +51,32 @@ def build_faiss_index_streaming_generator(file_obj, model_name='all-MiniLM-L6-v2
         chunk_overlap=chunk_overlap
     )
 
-    with pdfplumber.open(file_obj) as pdf:
-        for page_num, page in enumerate(pdf.pages, start=1):
-            text = page.extract_text()
-            if not text:
-                continue
+    chunk_id = 0
+    chunk_file_path = os.path.join(output_dir, "chunks.jsonl")
+    faiss_index_path = os.path.join(output_dir, "faiss.index")
 
-            for chunk_content in text_splitter.split_text(text.strip()):
-                embedding = model.encode([chunk_content])
-                index.add(np.array(embedding).astype('float32'))
+    with open(chunk_file_path, "w", encoding="utf-8") as chunk_file:
+        with pdfplumber.open(file_obj) as pdf:
+            for page_num, page in enumerate(pdf.pages, start=1):
+                text = page.extract_text()
+                if not text:
+                    continue
 
-                # Yield one chunk at a time instead of storing all in memory
-                yield {
-                    "content": chunk_content,
-                    "page": page_num
-                }, index, model
+                for chunk_content in text_splitter.split_text(text.strip()):
+                    embedding = model.encode([chunk_content])
+                    index.add(np.array(embedding).astype('float32'))
+
+                    chunk_data = {
+                        "id": chunk_id,
+                        "content": chunk_content,
+                        "page": page_num
+                    }
+                    chunk_file.write(json.dumps(chunk_data) + "\n")
+
+                    chunk_id += 1
+
+    faiss.write_index(index, faiss_index_path)
+    return chunk_file_path, faiss_index_path, model
 
 
 # Process a query using prebuilt index, chunks, and model
