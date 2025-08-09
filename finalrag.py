@@ -11,40 +11,40 @@ Original file is located at
 
 """# Imports"""
 
-import os
 import faiss
 import json
 import numpy as np
-from typing import List, Dict
 from sentence_transformers import SentenceTransformer
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-import pdfplumber
-import docx
-from email import policy
-from email.parser import BytesParser
 from groq import Groq
-import re
-from langchain_core.runnables import RunnableLambda
-from langchain_core.tools import Tool
-from langchain.agents import AgentExecutor, create_react_agent
 from langchain_core.prompts import PromptTemplate
+import pdfplumber
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from typing import Dict
 
 """# Main Code"""
 
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from sentence_transformers import SentenceTransformer
+def get_index_and_chunks(doc_path):
+    """
+    Loads chunks and builds a FAISS index from either:
+    - a file-like object (e.g., BytesIO for streamed PDFs)
+    - a local file path
+    Uses a streaming generator to avoid loading the entire document into memory.
+    """
+    if hasattr(doc_path, "read"):  # file-like object
+        gen = build_faiss_index_streaming_generator(doc_path)
+    else:  # path string
+        with open(doc_path, "rb") as f:
+            gen = build_faiss_index_streaming_generator(f)
 
-# 1. Document Loading & Chunking (Enhanced)
-
-def extract_text_from_pdf(path: str) -> List[Dict]:
-    """Extracts text from each page of a PDF."""
     chunks = []
-    with pdfplumber.open(path) as pdf:
-        for i, page in enumerate(pdf.pages):
-            text = page.extract_text()
-            if text:
-                chunks.append({"text": text.strip(), "page": i + 1})
-    return chunks
+    index = None
+    model = None
+    for chunk, idx, mdl in gen:
+        chunks.append(chunk)
+        index = idx
+        model = mdl
+
+    return chunks, index, model
 
 
 # Streaming generator to build FAISS without storing all chunks in memory
@@ -78,155 +78,26 @@ def build_faiss_index_streaming_generator(file_obj, model_name='all-MiniLM-L6-v2
                     "page": page_num
                 }, index, model
 
-def extract_text_from_docx(path: str) -> List[Dict]:
-    """Extracts text from a DOCX document."""
-    doc = docx.Document(path)
-    full_text = "\n".join([para.text for para in doc.paragraphs if para.text.strip()])
-    return [{"text": full_text, "page": 1}]
 
-def extract_text_from_email(path: str) -> List[Dict]:
-    """Extracts the body from an email file."""
-    with open(path, 'rb') as f:
-        msg = BytesParser(policy=policy.default).parse(f)
-    body = msg.get_body(preferencelist=('plain')).get_content()
-    return [{"text": body.strip(), "page": 1}]
-
-def load_and_chunk_document(path: str, chunk_size=1000, chunk_overlap=200) -> List[Dict]:
+# Process a query using prebuilt index, chunks, and model
+def process_query_with_index(query, chunks, index, model, groq_client):
     """
-    Loads a document from the given path, extracts the text, and then chunks it
-    using a RecursiveCharacterTextSplitter.
+    Runs semantic search on a prebuilt FAISS index and generates an answer.
+    Avoids rebuilding the index for every question.
     """
-    ext = os.path.splitext(path)[1].lower()
-    if ext == ".pdf":
-        raw_pages = extract_text_from_pdf(path)
-    elif ext == ".docx":
-        raw_pages = extract_text_from_docx(path)
-    elif ext in [".eml", ".email"]:
-        raw_pages = extract_text_from_email(path)
-    else:
-        raise ValueError("Unsupported file format")
+    query_embedding = model.encode([query])
+    distances, indices = index.search(np.array(query_embedding).astype('float32'), k=5)
 
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap
-    )
+    retrieved_chunks = []
+    for idx in indices[0]:
+        if idx < len(chunks):
+            retrieved_chunks.append(chunks[idx]['content'])
 
-    all_chunks = []
-    for page_info in raw_pages:
-        page_text = page_info["text"]
-        page_number = page_info["page"]
+    context = "\n".join(retrieved_chunks)
+    prompt = prompt_template.format(query=query, context=context)
+    return run_inference(prompt, groq_client)
 
-        # Use RecursiveCharacterTextSplitter for chunking
-        recursive_chunks = text_splitter.split_text(page_text)
-
-        for chunk_content in recursive_chunks:
-            all_chunks.append({
-                "content": chunk_content,
-                "page": page_number,
-                "source_file": os.path.basename(path)
-            })
-
-    return all_chunks
-
-from functools import lru_cache
-
-@lru_cache(maxsize=1)
-def get_index_and_chunks(doc_path):
-    if hasattr(doc_path, "read"):  # file-like object (BytesIO)
-        gen = build_faiss_index_streaming_generator(doc_path)
-    else:  # local file path
-        with open(doc_path, "rb") as f:
-            gen = build_faiss_index_streaming_generator(f)
-
-    chunks = []
-    index = None
-    model = None
-    for chunk, idx, mdl in gen:
-        chunks.append(chunk)
-        index = idx
-        model = mdl
-
-    return chunks, index, model
-
-# 2. Embedding + FAISS Indexing
-
-def build_faiss_index(chunks: List[Dict], model_name='all-MiniLM-L6-v2'):
-    model = SentenceTransformer(model_name)
-    texts = [c['content'] for c in chunks]
-    embeddings = model.encode(texts)
-
-    dim = embeddings.shape[1]
-    index = faiss.IndexFlatL2(dim)
-    index.add(np.array(embeddings).astype('float32'))
-
-    return index, embeddings, model
-
-# 3. Hybrid Semantic Retrieval
-
-def search_top_chunks(query: str, chunks: List[Dict], model, index, k=5) -> List[Dict]:
-    query_vec = model.encode([query])
-    D, I = index.search(np.array(query_vec).astype('float32'), k)
-    return [chunks[i] for i in I[0]]
-
-def parse_query_with_llm(query: str, groq_client: Groq) -> Dict:
-    """
-    Uses the LLM to parse a natural language query into a structured JSON object.
-    """
-    prompt = f"""
-    You are an expert at parsing user queries related to insurance policies.
-    Your task is to extract key entities from the user's question and structure them into a JSON object.
-
-    The entities to extract are:
-    - "age": The age of the person in the query (as an integer).
-    - "gender": The gender, if mentioned ("M" or "F").
-    - "procedure": The medical procedure or treatment mentioned.
-    - "location": The city or location mentioned.
-    - "policy_duration": Any mention of how long the policy has been active.
-    - "condition": Any other medical condition or context.
-
-    User Query: "{query}"
-
-    Return a clean JSON object. If a value is not found, set it to null.
-    """
-
-    try:
-        chat_completion = groq_client.chat.completions.create(
-            messages=[{"role": "user", "content": prompt}],
-            model="llama3-8b-8192",
-            temperature=0,
-            response_format={"type": "json_object"} # Enforce JSON output
-        )
-        result = chat_completion.choices[0].message.content
-        return json.loads(result)
-    except Exception as e:
-        print(f"Error parsing query with LLM: {e}")
-        return {} # Return an empty dict on failure
-
-#Reranking the chunks for better retrival
-from sentence_transformers.cross_encoder import CrossEncoder
-
-def rerank_chunks(query: str, chunks: List[Dict], top_n=3) -> List[Dict]:
-    """
-    Re-ranks a list of chunks based on their relevance to the query using a CrossEncoder model.
-    """
-    # Initialize the CrossEncoder model. This model is more powerful but slower than bi-encoders.
-    cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
-
-    # Create pairs of [query, chunk_content] for scoring.
-    pairs = [[query, chunk['content']] for chunk in chunks]
-
-    # Predict the relevance scores.
-    scores = cross_encoder.predict(pairs)
-
-    # Combine chunks with their scores and sort them.
-    scored_chunks = list(zip(scores, chunks))
-    scored_chunks.sort(reverse=True, key=lambda x: x[0])
-
-    # Return the top N most relevant chunks.
-    return [chunk for score, chunk in scored_chunks[:top_n]]
-
-# 5. Prompt Template
-
+# Prompt Template
 prompt_template = PromptTemplate(
     input_variables=["query", "context"],
     template="""
@@ -254,8 +125,7 @@ Your task:
 """
 )
 
-# 6. Call the LLM (Groq)
-
+# Call the LLM (Groq)
 def run_inference(prompt: str, groq_client: Groq) -> Dict:
     try:
         chat_completion = groq_client.chat.completions.create(
@@ -277,55 +147,4 @@ def run_inference(prompt: str, groq_client: Groq) -> Dict:
         print(f"An unexpected error occurred: {e}")
         return {"error": "An unexpected error occurred", "raw": str(e)}
 
-# 7. Reflection Tool to Detect Assumptions
-
-def detect_assumption(prompt: str) -> str:
-    return f"Does this reasoning make assumptions not stated in the query?\n{prompt}\n\nBe critical and point them out explicitly."
-
-def check_assumptions_wrapper(p):
-    return run_inference(detect_assumption(p), groq_client)
-
-reflection_tool = Tool(
-    name="AssumptionChecker",
-    func=check_assumptions_wrapper,
-    description="Checks if the given reasoning makes unstated assumptions."
-)
-
-# 8. Agent Execution
-
-def build_agent(groq_client: Groq):
-    tools = [
-        Tool(
-            name="RetrieveRelevantChunks",
-            func=lambda input: search_top_chunks(input['query'], input['chunks'], input['model'], input['index']),
-            description="Retrieves relevant document clauses for the query"
-        ),
-        reflection_tool
-    ]
-
-    agent = create_react_agent(
-        tools=tools,
-        llm=lambda input: run_inference(prompt_template.format(query=input['query'], context="\n\n".join([f"[Clause - Pg {c['page']}] {c['content']}" for c in input['chunks']])), groq_client)
-    )
-    return AgentExecutor(agent=agent, verbose=True)
-
-# 9. End-to-End Runner (Enhanced)
-
-def process_query(query: str, doc_path: str, groq_client: Groq):
-    parsed_query_data = parse_query_with_llm(query, groq_client)
-    print("✅ Parsed Query:", json.dumps(parsed_query_data, indent=2))
-
-    chunks, index, model = get_index_and_chunks(doc_path)
-
-    initial_chunks = search_top_chunks(query, chunks, model, index, k=10)
-    reranked_chunks = rerank_chunks(query, initial_chunks, top_n=3)
-
-    context = "\n\n".join([f"[Clause - Pg {c['page']}] {c['content']}" for c in reranked_chunks])
-    prompt = prompt_template.format(query=query, context=context)
-    return run_inference(prompt, groq_client)
-
 groq_client = Groq(api_key="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")
-
-def ask_a_question(query, doc_path):
-    result = process_query(query, doc_path, groq_client)
-    print(json.dumps(result, indent=2))
