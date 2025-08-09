@@ -8,6 +8,7 @@ Original file is located at
 
 # Installations
 """
+
 """# Imports"""
 
 import os
@@ -15,35 +16,31 @@ import faiss
 import json
 import numpy as np
 from typing import List, Dict
-from sentence_transformers import SentenceTransformer, CrossEncoder
+from functools import lru_cache
+from sentence_transformers import SentenceTransformer
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 import pdfplumber
 import docx
 from email import policy
 from email.parser import BytesParser
 from groq import Groq
-import re
-from langchain_core.runnables import RunnableLambda
-from langchain_core.tools import Tool
-from langchain.agents import AgentExecutor, create_react_agent
 from langchain_core.prompts import PromptTemplate
-from functools import lru_cache
 
 """# Main Code"""
 
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from sentence_transformers import SentenceTransformer
+# --- LAZY LOADING: Models will be loaded on first use, not at startup ---
+EMBEDDING_MODEL = None
 
-# Initialize the models once at the top level of the module
-# This prevents them from being re-loaded on every request,
-# which was causing the 502 Bad Gateway timeout.
-print("Loading SentenceTransformer models...")
-EMBEDDING_MODEL = SentenceTransformer('paraphrase-albert-small-v2')
-RERANKER_MODEL = CrossEncoder('cross-encoder/ms-marco-TinyBERT-L2-v2')
-print("Models loaded.")
+def get_embedding_model():
+    global EMBEDDING_MODEL
+    if EMBEDDING_MODEL is None:
+        print("Loading embedding model on first request...")
+        EMBEDDING_MODEL = SentenceTransformer('sentence-transformers/paraphrase-albert-small-v2')
+        print("Embedding model loaded successfully.")
+    return EMBEDDING_MODEL
 
-# 1. Document Loading & Chunking (Enhanced)
 
+# 1. Document Loading & Chunking
 def extract_text_from_pdf(path: str) -> List[Dict]:
     """Extracts text from each page of a PDF."""
     chunks = []
@@ -92,7 +89,6 @@ def load_and_chunk_document(path: str, chunk_size=1000, chunk_overlap=200) -> Li
         page_text = page_info["text"]
         page_number = page_info["page"]
 
-        # Use RecursiveCharacterTextSplitter for chunking
         recursive_chunks = text_splitter.split_text(page_text)
 
         for chunk_content in recursive_chunks:
@@ -111,86 +107,43 @@ def get_index_and_chunks(doc_path):
     This prevents re-loading and re-indexing the same document for every request.
     """
     chunks = load_and_chunk_document(doc_path)
-    index, embeddings, model = build_faiss_index(chunks)
-    return chunks, index, model
+    index = build_faiss_index(chunks)
+    return chunks, index
 
 # 2. Embedding + FAISS Indexing
-
 def build_faiss_index(chunks: List[Dict]):
     """
     Builds a FAISS index from the provided chunks using the pre-loaded embedding model.
     """
+    model = get_embedding_model()
     texts = [c['content'] for c in chunks]
-    embeddings = EMBEDDING_MODEL.encode(texts)
+    embeddings = model.encode(texts)
 
     dim = embeddings.shape[1]
     index = faiss.IndexFlatL2(dim)
     index.add(np.array(embeddings).astype('float32'))
 
-    return index, embeddings, EMBEDDING_MODEL
+    return index
 
 # 3. Hybrid Semantic Retrieval
-
-def search_top_chunks(query: str, chunks: List[Dict], model, index, k=5) -> List[Dict]:
+def search_top_chunks(query: str, chunks: List[Dict], index, k=5) -> List[Dict]:
+    """
+    Searches for the top k most relevant chunks using the pre-loaded index and model.
+    """
+    model = get_embedding_model()
     query_vec = model.encode([query])
     D, I = index.search(np.array(query_vec).astype('float32'), k)
     return [chunks[i] for i in I[0]]
 
-def parse_query_with_llm(query: str, groq_client: Groq) -> Dict:
-    """
-    Uses the LLM to parse a natural language query into a structured JSON object.
-    """
-    prompt = f"""
-    You are an expert at parsing user queries related to insurance policies.
-    Your task is to extract key entities from the user's question and structure them into a JSON object.
-
-    The entities to extract are:
-    - "age": The age of the person in the query (as an integer).
-    - "gender": The gender, if mentioned ("M" or "F").
-    - "procedure": The medical procedure or treatment mentioned.
-    - "location": The city or location mentioned.
-    - "policy_duration": Any mention of how long the policy has been active.
-    - "condition": Any other medical condition or context.
-
-    User Query: "{query}"
-
-    Return a clean JSON object. If a value is not found, set it to null.
-    """
-
-    try:
-        chat_completion = groq_client.chat.completions.create(
-            messages=[{"role": "user", "content": prompt}],
-            model="llama3-8b-8192",
-            temperature=0,
-            response_format={"type": "json_object"} # Enforce JSON output
-        )
-        result = chat_completion.choices[0].message.content
-        return json.loads(result)
-    except Exception as e:
-        print(f"Error parsing query with LLM: {e}")
-        return {} # Return an empty dict on failure
-
-#Reranking the chunks for better retrival
-
 def rerank_chunks(query: str, chunks: List[Dict], top_n=3) -> List[Dict]:
     """
-    Re-ranks a list of chunks based on their relevance to the query using a CrossEncoder model.
+    Re-ranks a list of chunks based on their relevance to the query using the CrossEncoder model.
     """
-    # Create pairs of [query, chunk_content] for scoring.
-    pairs = [[query, chunk['content']] for chunk in chunks]
+    # This function is removed to further reduce memory footprint
+    return chunks[:top_n]
 
-    # Predict the relevance scores using the pre-loaded model.
-    scores = RERANKER_MODEL.predict(pairs)
 
-    # Combine chunks with their scores and sort them.
-    scored_chunks = list(zip(scores, chunks))
-    scored_chunks.sort(reverse=True, key=lambda x: x[0])
-
-    # Return the top N most relevant chunks.
-    return [chunk for score, chunk in scored_chunks[:top_n]]
-
-# 5. Prompt Template
-
+# 4. Prompt Template
 prompt_template = PromptTemplate(
     input_variables=["query", "context"],
     template="""
@@ -218,8 +171,7 @@ Your task:
 """
 )
 
-# 6. Call the LLM (Groq)
-
+# 5. Call the LLM (Groq)
 def run_inference(prompt: str, groq_client: Groq) -> Dict:
     try:
         chat_completion = groq_client.chat.completions.create(
@@ -241,53 +193,13 @@ def run_inference(prompt: str, groq_client: Groq) -> Dict:
         print(f"An unexpected error occurred: {e}")
         return {"error": "An unexpected error occurred", "raw": str(e)}
 
-# 7. Reflection Tool to Detect Assumptions
-
-def detect_assumption(prompt: str) -> str:
-    return f"Does this reasoning make assumptions not stated in the query?\n{prompt}\n\nBe critical and point them out explicitly."
-
-def check_assumptions_wrapper(p):
-    return run_inference(detect_assumption(p), groq_client)
-
-reflection_tool = Tool(
-    name="AssumptionChecker",
-    func=check_assumptions_wrapper,
-    description="Checks if the given reasoning makes unstated assumptions."
-)
-
-# 8. Agent Execution
-
-def build_agent(groq_client: Groq):
-    tools = [
-        Tool(
-            name="RetrieveRelevantChunks",
-            func=lambda input: search_top_chunks(input['query'], input['chunks'], input['model'], input['index']),
-            description="Retrieves relevant document clauses for the query"
-        ),
-        reflection_tool
-    ]
-
-    agent = create_react_agent(
-        tools=tools,
-        llm=lambda input: run_inference(prompt_template.format(query=input['query'], context="\n\n".join([f"[Clause - Pg {c['page']}] {c['content']}" for c in input['chunks']])), groq_client)
-    )
-    return AgentExecutor(agent=agent, verbose=True)
-
-# 9. End-to-End Runner (Enhanced)
-
+# 6. End-to-End Runner (Enhanced)
 def process_query(query: str, doc_path: str, groq_client: Groq):
-    parsed_query_data = parse_query_with_llm(query, groq_client)
-    print("✅ Parsed Query:", json.dumps(parsed_query_data, indent=2))
-
-    # The get_index_and_chunks function is now correctly cached based on the doc_path.
-    # This prevents the slow re-loading of the model and re-indexing of the document
-    # for repeat requests with the same document.
-    chunks, index, model = get_index_and_chunks(doc_path)
-
-    initial_chunks = search_top_chunks(query, chunks, model, index, k=10)
-    reranked_chunks = rerank_chunks(query, initial_chunks, top_n=3)
-
-    context = "\n\n".join([f"[Clause - Pg {c['page']}] {c['content']}" for c in reranked_chunks])
+    chunks, index = get_index_and_chunks(doc_path)
+    initial_chunks = search_top_chunks(query, chunks, index, k=5)
+    # Reranking is removed to save memory.
+    
+    context = "\n\n".join([f"[Clause - Pg {c['page']}] {c['content']}" for c in initial_chunks])
     prompt = prompt_template.format(query=query, context=context)
     return run_inference(prompt, groq_client)
 
