@@ -37,7 +37,7 @@ def get_index_and_chunks(doc_path, output_dir="."):
 # Streaming generator to build FAISS without storing all chunks in memory
 import os
 
-def build_faiss_index_streaming_generator(file_obj, model_name='all-MiniLM-L6-v2', chunk_size=1000, chunk_overlap=200, output_dir="."):
+def build_faiss_index_streaming_generator(file_obj, model_name='paraphrase-MiniLM-L3-v2', chunk_size=1000, chunk_overlap=200, output_dir="."):
     """
     Streams through PDF pages, yields each chunk as it's embedded into FAISS.
     Keeps memory usage constant regardless of PDF size.
